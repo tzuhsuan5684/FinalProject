@@ -114,11 +114,10 @@ def run_experiment():
     # (B) 模型列表
     models = [
         ('LinearRegression', LinearRegression()),
-        
         ('RandomForest_Depth5', RandomForestRegressor(n_estimators=50, max_depth=5, n_jobs=-1, random_state=42)),
         ('RandomForest_Depth10', RandomForestRegressor(n_estimators=50, max_depth=10, n_jobs=-1, random_state=42)),
-        
-        ('XGBoost', xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42))
+        ('XGBoost', xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)),
+        ('XGBoost', xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=10, random_state=42))
     ]
     
     # -----------------------------------------------------
