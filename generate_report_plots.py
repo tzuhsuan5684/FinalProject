@@ -36,10 +36,10 @@ print("🚀 正在載入資料並訓練最佳模型...")
 df = pd.read_csv(DATA_FILE)
 df['rent_time'] = pd.to_datetime(df['rent_time'])
 
-# 定義最佳特徵組合 (All In)
+# 定義最佳特徵組合
 features = ['hour', 'weekday', 'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']
 # 準備資料
-X=df[['hour', 'weekday', 'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']]
+X=df[features]
 # X = pd.get_dummies(X, columns=['rent_station'], drop_first=True)
 y = df['rent_count']
 
@@ -51,7 +51,7 @@ y_train = y[~is_test]
 y_test = y[is_test]
 test_time = df.loc[is_test, 'rent_time']
 
-# 訓練 XGBoost
+# 訓練 最佳模型 (RandomForestRegressor, depth=10)
 model = RandomForestRegressor(n_estimators=50, max_depth=10, n_jobs=-1, random_state=42)
 model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
