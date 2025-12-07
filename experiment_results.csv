@@ -1,4 +1,0 @@
-﻿Experiment_ID,Timestamp,Model,MAE,RMSE,R2,Features
-20251205_103518,2025-12-05 10:35:19,Random Forest,9.7365,15.6086,0.6302,hour; weekday; month; rent_station_捷運公館站(3號出口); rent_station_捷運科技大樓站; rent_station_捷運芝山站(2號出口); rent_station_捷運龍山寺站(1號出口)
-20251205_104204,2025-12-05 10:42:05,Random Forest,10.1371,16.0860,0.6073,hour; weekday; month; rent_station_捷運公館站(3號出口); rent_station_捷運科技大樓站; rent_station_捷運芝山站(2號出口); rent_station_捷運龍山寺站(1號出口)
-20251205_104442,2025-12-05 10:44:43,Random Forest,10.1371,16.0860,0.6073,hour; weekday; month; rent_station_捷運公館站(3號出口); rent_station_捷運科技大樓站; rent_station_捷運芝山站(2號出口); rent_station_捷運龍山寺站(1號出口)

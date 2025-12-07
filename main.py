@@ -1,246 +1,269 @@
-import pandas as pd
-import numpy as np
+"""Baseline model comparison for Ubike demand prediction.
+
+This script trains three baseline regressors - Linear Regression, Random Forest,
+and XGBoost - on the cleaned Ubike demand dataset. It uses a time-based split to
+respect the temporal order of the data, evaluates each model on March data, and
+exports both a metrics table and a publication-ready comparison figure.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, Tuple
+
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import warnings
-import platform
-import os
-from datetime import datetime
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from xgboost import XGBRegressor
 
-# ==========================================
-# 1. 初始設定
-# ==========================================
-warnings.filterwarnings('ignore')
 
-# 設定中文字型
-system_name = platform.system()
-if system_name == "Windows":
-    plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
-elif system_name == "Darwin":
-    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS']
-else:
-    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+RANDOM_STATE = 42
 
-# ==========================================
-# 2. 主程式
-# ==========================================
-if __name__ == "__main__":
-    # 產生實驗編號（批次）
-    batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"🆔 批次實驗編號: {batch_id}")
-    print("=" * 60)
-    
-    # 載入資料
-    print("📚 正在載入資料...")
-    df = pd.read_csv('FINAL_MODEL_DATA_CLEAN.csv')
-    df['rent_time'] = pd.to_datetime(df['rent_time'])
-    
-    # 準備特徵與目標
-    features = ['hour', 'weekday', 'Quantity', 'mrt_dist_nearest_m', 
-                'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']
-    X = df[features]
-    y = df['rent_count']
-    
-    # 切分訓練集與測試集 (3月為測試集)
-    test_mask = df['rent_time'].dt.month == 3
-    X_train, X_test = X[~test_mask], X[test_mask]
-    y_train, y_test = y[~test_mask], y[test_mask]
-    test_time = df.loc[test_mask, 'rent_time']
-    
-    print(f"✅ 訓練集: {len(X_train)} 筆, 測試集: {len(X_test)} 筆\n")
-    
-    # 計算峰值門檻
-    threshold = y_train.quantile(0.75)
-    peak_count = np.sum(y_train > threshold)
-    print(f"📊 峰值門檻 (Q3): {threshold:.1f}")
-    print(f"📊 峰值樣本數: {peak_count} 筆 ({peak_count/len(y_train)*100:.1f}%)")
-    print("=" * 60)
-    
-    # 測試不同的峰值權重
-    peak_weights = [1.0, 2.0, 3.0, 4.0]
-    all_results = []
-    
-    for peak_weight in peak_weights:
-        print(f"\n🔄 測試峰值權重 = {peak_weight}")
-        print("-" * 60)
-        
-        # 計算樣本權重
-        sample_weights = np.where(y_train > threshold, peak_weight, 1.0)
-        
-        # 訓練模型
-        model = RandomForestRegressor(
-            n_estimators=200,
-            max_depth=20,
-            min_samples_leaf=1,
-            random_state=42,
-            n_jobs=-1
-        )
-        model.fit(X_train, y_train, sample_weight=sample_weights)
-        
-        # 預測與評估
-        y_pred = model.predict(X_test)
-        y_pred = np.maximum(y_pred, 0)
-        
-        mae = mean_absolute_error(y_test, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        r2 = r2_score(y_test, y_pred)
-        
-        # 計算峰值樣本的專屬指標
-        peak_mask = y_test > threshold
-        if peak_mask.sum() > 0:
-            peak_mae = mean_absolute_error(y_test[peak_mask], y_pred[peak_mask])
-            peak_rmse = np.sqrt(mean_squared_error(y_test[peak_mask], y_pred[peak_mask]))
-        else:
-            peak_mae = np.nan
-            peak_rmse = np.nan
-        
-        print(f"   整體 MAE  : {mae:.4f}")
-        print(f"   整體 RMSE : {rmse:.4f}")
-        print(f"   整體 R²   : {r2:.4f}")
-        print(f"   峰值 MAE  : {peak_mae:.4f}")
-        print(f"   峰值 RMSE : {peak_rmse:.4f}")
-        
-        # 繪製每小時平均趨勢圖
-        df_temp = pd.DataFrame({
-            'Actual': y_test.values,
-            'Predicted': y_pred,
-            'Hour': X_test['hour'].values
+
+def load_dataset(csv_path: Path) -> pd.DataFrame:
+    """Load the cleaned Ubike dataset and parse datetimes."""
+    df = pd.read_csv(csv_path, parse_dates=["rent_time"])
+    if df.empty:
+        raise ValueError("The input dataset is empty. Double-check the source file.")
+    return df
+
+
+def engineer_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """Prepare features and target without leaking future information."""
+    target = df["rent_count"]
+
+    feature_df = df.drop(columns=["rent_count"])
+    # feature_df = df[['hour', 'weekday', 'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']]
+    feature_df = feature_df.drop(columns=["rent_time"], errors="ignore")
+    return feature_df, target
+
+
+def temporal_train_test_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split the dataframe into training (before March) and testing (March)."""
+    if "rent_time" not in df.columns:
+        raise KeyError("Column 'rent_time' is required for the temporal split.")
+
+    march_mask = df["rent_time"].dt.month == 3
+    test_df = df[march_mask].copy()
+    train_df = df[~march_mask].copy()
+
+    if train_df.empty or test_df.empty:
+        raise ValueError("Temporal split failed: ensure March data exists for testing.")
+
+    return train_df, test_df
+
+
+def build_preprocessor(features: pd.DataFrame) -> ColumnTransformer:
+    """Create a preprocessing pipeline for numeric and categorical features."""
+    categorical_features = [col for col in features.columns if features[col].dtype == "object"]
+    numeric_features = [col for col in features.columns if col not in categorical_features]
+
+    numeric_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+
+    categorical_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            (
+                "onehot",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+            ),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipeline, numeric_features),
+            ("cat", categorical_pipeline, categorical_features),
+        ]
+    )
+
+    return preprocessor
+
+
+def build_models(preprocessor: ColumnTransformer) -> Dict[str, Pipeline]:
+    """Instantiate the baseline model pipelines."""
+    return {
+        "Linear Regression": Pipeline(
+            steps=[
+                ("preprocess", preprocessor),
+                ("regressor", LinearRegression()),
+            ]
+        ),
+        "Random Forest": Pipeline(
+            steps=[
+                ("preprocess", preprocessor),
+                (
+                    "regressor",
+                    RandomForestRegressor(
+                        n_estimators=200,
+                        max_depth=12,
+                        min_samples_leaf=2,
+                        n_jobs=-1,
+                        random_state=RANDOM_STATE,
+                    ),
+                ),
+            ]
+        ),
+        "XGBoost": Pipeline(
+            steps=[
+                ("preprocess", preprocessor),
+                (
+                    "regressor",
+                    XGBRegressor(
+                        n_estimators=200,
+                        learning_rate=0.05,
+                        max_depth=4,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        random_state=RANDOM_STATE,
+                        objective="reg:squarederror",
+                        n_jobs=-1,
+                        tree_method="hist",
+                    ),
+                ),
+            ]
+        ),
+    }
+
+
+def evaluate_models(
+    models: Dict[str, Pipeline],
+    train_features: pd.DataFrame,
+    train_target: pd.Series,
+    test_features: pd.DataFrame,
+    test_target: pd.Series,
+) -> pd.DataFrame:
+    """Train models and compute baseline regression metrics."""
+    records = []
+
+    for name, model in models.items():
+        model.fit(train_features, train_target)
+        predictions = model.predict(test_features)
+
+        mae = mean_absolute_error(test_target, predictions)
+        rmse = mean_squared_error(test_target, predictions) ** 0.5
+        r2 = r2_score(test_target, predictions)
+
+        records.append({
+            "Model": name,
+            "MAE": mae,
+            "RMSE": rmse,
+            "R2": r2,
         })
-        hourly_avg = df_temp.groupby('Hour').mean()
-        
-        plt.figure(figsize=(10, 6))
-        plt.plot(hourly_avg.index, hourly_avg['Actual'], 'o-', label='真實平均', color='black', linewidth=2)
-        plt.plot(hourly_avg.index, hourly_avg['Predicted'], 'o--', label='預測平均', color='red', linewidth=2)
-        plt.xlabel('小時 (0-23)')
-        plt.ylabel('平均借車數')
-        plt.title(f'每小時平均借車量趨勢 (權重={peak_weight})')
-        plt.xticks(range(0, 24))
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        
-        # 暫存圖表，稍後統一儲存
-        hourly_fig_path = f'hourly_trend_weight_{peak_weight}.png'
-        plt.savefig(hourly_fig_path, dpi=300)
-        plt.close()
-        
-        # 儲存結果
-        result = {
-            'batch_id': batch_id,
-            'peak_weight': peak_weight,
-            'peak_threshold': threshold,
-            'peak_samples_train': peak_count,
-            'peak_samples_test': peak_mask.sum(),
-            'MAE': mae,
-            'RMSE': rmse,
-            'R2': r2,
-            'peak_MAE': peak_mae,
-            'peak_RMSE': peak_rmse,
-            'n_estimators': 200,
-            'max_depth': 20,
-            'min_samples_leaf': 1,
-            'train_samples': len(X_train),
-            'test_samples': len(X_test),
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        all_results.append(result)
-    
-    # ==========================================
-    # 3. 儲存比較結果
-    # ==========================================
-    print("\n" + "=" * 60)
-    print("💾 儲存實驗結果...")
-    
-    # 建立批次資料夾
-    output_dir = os.path.join('results', f'batch_{batch_id}')
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 移動每小時趨勢圖到批次資料夾
-    for peak_weight in peak_weights:
-        temp_file = f'hourly_trend_weight_{peak_weight}.png'
-        if os.path.exists(temp_file):
-            final_path = os.path.join(output_dir, temp_file)
-            os.rename(temp_file, final_path)
-            print(f"✅ 已儲存: {final_path}")
-    
-    # 儲存比較結果
-    results_df = pd.DataFrame(all_results)
-    comparison_csv_path = f'{output_dir}/weight_comparison.csv'
-    results_df.to_csv(comparison_csv_path, index=False, encoding='utf-8-sig')
-    print(f"✅ 比較結果已儲存: {comparison_csv_path}")
-    
-    # 追加到總實驗紀錄
-    all_experiments_path = 'results/all_experiments.csv'
-    if os.path.exists(all_experiments_path):
-        results_df.to_csv(all_experiments_path, mode='a', header=False, index=False, encoding='utf-8-sig')
-    else:
-        results_df.to_csv(all_experiments_path, index=False, encoding='utf-8-sig')
-    print(f"✅ 已追加至總實驗紀錄: {all_experiments_path}")
-    
-    # ==========================================
-    # 4. 繪製比較圖表
-    # ==========================================
-    print("\n📊 繪製比較圖表...")
-    
-    # 圖1: MAE 比較
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # MAE 比較
-    axes[0, 0].plot(results_df['peak_weight'], results_df['MAE'], 'o-', linewidth=2, markersize=8, color='blue')
-    axes[0, 0].set_xlabel('峰值權重')
-    axes[0, 0].set_ylabel('MAE')
-    axes[0, 0].set_title('整體 MAE vs 峰值權重')
-    axes[0, 0].grid(True, alpha=0.3)
-    axes[0, 0].set_xticks(peak_weights)
-    
-    # RMSE 比較
-    axes[0, 1].plot(results_df['peak_weight'], results_df['RMSE'], 'o-', linewidth=2, markersize=8, color='red')
-    axes[0, 1].set_xlabel('峰值權重')
-    axes[0, 1].set_ylabel('RMSE')
-    axes[0, 1].set_title('整體 RMSE vs 峰值權重')
-    axes[0, 1].grid(True, alpha=0.3)
-    axes[0, 1].set_xticks(peak_weights)
-    
-    # R² 比較
-    axes[1, 0].plot(results_df['peak_weight'], results_df['R2'], 'o-', linewidth=2, markersize=8, color='green')
-    axes[1, 0].set_xlabel('峰值權重')
-    axes[1, 0].set_ylabel('R²')
-    axes[1, 0].set_title('R² vs 峰值權重')
-    axes[1, 0].grid(True, alpha=0.3)
-    axes[1, 0].set_xticks(peak_weights)
-    
-    # 峰值 MAE 比較
-    axes[1, 1].plot(results_df['peak_weight'], results_df['peak_MAE'], 'o-', linewidth=2, markersize=8, color='purple')
-    axes[1, 1].set_xlabel('峰值權重')
-    axes[1, 1].set_ylabel('峰值 MAE')
-    axes[1, 1].set_title('峰值樣本 MAE vs 峰值權重')
-    axes[1, 1].grid(True, alpha=0.3)
-    axes[1, 1].set_xticks(peak_weights)
-    
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/weight_comparison.png', dpi=300)
-    plt.close()
-    print(f"✅ 比較圖表已儲存: {output_dir}/weight_comparison.png")
-    
-    # ==========================================
-    # 5. 顯示最佳結果
-    # ==========================================
-    print("\n" + "=" * 60)
-    print("🏆 實驗結果總結")
-    print("=" * 60)
-    
-    best_mae_idx = results_df['MAE'].idxmin()
-    best_r2_idx = results_df['R2'].idxmax()
-    best_peak_mae_idx = results_df['peak_MAE'].idxmin()
-    
-    print(f"\n✨ 最低 MAE: 權重 = {results_df.loc[best_mae_idx, 'peak_weight']}, MAE = {results_df.loc[best_mae_idx, 'MAE']:.4f}")
-    print(f"✨ 最高 R²: 權重 = {results_df.loc[best_r2_idx, 'peak_weight']}, R² = {results_df.loc[best_r2_idx, 'R2']:.4f}")
-    print(f"✨ 最低峰值 MAE: 權重 = {results_df.loc[best_peak_mae_idx, 'peak_weight']}, 峰值 MAE = {results_df.loc[best_peak_mae_idx, 'peak_MAE']:.4f}")
-    
-    print("\n" + "=" * 60)
-    print(f"🆔 批次實驗編號: {batch_id}")
-    print(f"📁 結果資料夾: {output_dir}")
-    print("🎉 執行完畢！")
+
+    metrics_df = pd.DataFrame(records).sort_values("MAE").reset_index(drop=True)
+    return metrics_df
+
+
+def plot_model_performance(metrics_df: pd.DataFrame, output_path: Path) -> None:
+    """Create publication-ready comparison charts with separated axes."""
+    sns.set_theme(style="whitegrid", font_scale=1.05)
+
+    long_metrics = metrics_df.melt(id_vars="Model", var_name="Metric", value_name="Score")
+    bar_palette = ["#4C72B0", "#55A868", "#C44E52"]
+
+    error_metrics = long_metrics[long_metrics["Metric"].isin(["MAE", "RMSE"])].copy()
+    r2_metrics = long_metrics[long_metrics["Metric"] == "R2"].copy()
+
+    fig, axes = plt.subplots(ncols=2, figsize=(11, 5.5))
+
+    # Plot MAE and RMSE side by side to keep scales comparable.
+    sns.barplot(
+        data=error_metrics,
+        x="Metric",
+        y="Score",
+        hue="Model",
+        palette=bar_palette,
+        ax=axes[0],
+    )
+    axes[0].set_title("Error Metrics (lower is better)", fontsize=13, weight="bold")
+    axes[0].set_ylabel("Score")
+    axes[0].set_xlabel("")
+
+    # Dedicated panel for R2 so the smaller scale does not get compressed.
+    sns.barplot(
+        data=r2_metrics,
+        x="Metric",
+        y="Score",
+        hue="Model",
+        palette=bar_palette,
+        ax=axes[1],
+    )
+    axes[1].set_title("Coefficient of Determination", fontsize=13, weight="bold")
+    axes[1].set_ylabel("R2 score")
+    axes[1].set_xlabel("")
+    ymin = min(0.0, r2_metrics["Score"].min() - 0.05)
+    ymax = max(0.6, r2_metrics["Score"].max() + 0.05)
+    axes[1].set_ylim(ymin, ymax)
+
+    for subplot in axes:
+        for container in subplot.containers:
+            subplot.bar_label(container, fmt="{:.2f}", padding=3, fontsize=9)
+        subplot.grid(axis="y", linestyle="--", linewidth=0.6)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    axes[0].legend_.remove()
+    axes[1].legend_.remove()
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle("Baseline Model Comparison on March Test Set", fontsize=14, weight="bold")
+    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def export_metrics_table(metrics_df: pd.DataFrame, output_path: Path) -> None:
+    """Save metrics table as CSV for reproducibility."""
+    metrics_df.to_csv(output_path, index=False)
+
+
+def main() -> None:
+    project_dir = Path(__file__).resolve().parent
+    data_path = project_dir / "FINAL_MODEL_DATA_CLEAN.csv"
+    results_dir = project_dir / "results"
+    results_dir.mkdir(exist_ok=True)
+
+    df = load_dataset(data_path)
+    train_df, test_df = temporal_train_test_split(df)
+
+    train_features, train_target = engineer_features(train_df)
+    test_features, test_target = engineer_features(test_df)
+
+    preprocessor = build_preprocessor(train_features)
+    models = build_models(preprocessor)
+
+    metrics_df = evaluate_models(
+        models,
+        train_features,
+        train_target,
+        test_features,
+        test_target,
+    )
+
+    metrics_path = results_dir / "baseline_model_metrics.csv"
+    figure_path = results_dir / "baseline_model_comparison.png"
+
+    export_metrics_table(metrics_df, metrics_path)
+    plot_model_performance(metrics_df, figure_path)
+
+    print("Baseline evaluation complete. Metrics:")
+    print(metrics_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    print(f"Metrics table saved to: {metrics_path}")
+    print(f"Comparison figure saved to: {figure_path}")
+
+
+if __name__ == "__main__":
+    main()
