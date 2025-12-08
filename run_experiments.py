@@ -8,12 +8,13 @@ import os
 import csv
 from datetime import datetime
 import warnings
+import joblib
 
 # 忽略警告
 warnings.filterwarnings('ignore')
 
 # 設定檔案路徑
-DATA_FILE = 'FINAL_MODEL_DATA_CLEAN.csv'
+DATA_FILE = 'FINAL_MODEL_DATA_WITH_FEATURES.csv'
 RESULT_FILE = 'batch_experiment_results.csv'
 
 def load_data(filepath):
@@ -108,17 +109,53 @@ def run_experiment():
         # --- 6. 全特徵 (All In) ---
         ['hour', 'weekday', 'month', 'is_weekend', 'is_peak', 
          'temperature', 'rainfall', 'wind_speed', 
-         'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']
+         'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count'],
+
+        # --- 7. 滯後特徵 (Lag Features) ---
+        ['hour', 'weekday', 'is_weekend', 'is_peak', 'rent_count_lag_3', 'rent_count_lag_24'],
+
+        # --- 8. 交互作用特徵 (Interaction Features) ---
+        ['hour', 'weekday', 'is_weekend', 'is_peak', 'capacity_per_pop', 'weekend_peak', 'weekday_peak'],
+
+        # --- 9. 全特徵 + 滯後 + 交互作用 (Full Enhanced) ---
+        ['hour', 'weekday', 'month', 'is_weekend', 'is_peak', 
+         'temperature', 'rainfall', 'wind_speed', 
+         'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count',
+         'rent_count_lag_3', 'rent_count_lag_24',
+         'capacity_per_pop', 'weekend_peak', 'weekday_peak']
     ]
     
     # (B) 模型列表
-    models = [
-        ('LinearRegression', LinearRegression()),
-        ('RandomForest_Depth5', RandomForestRegressor(n_estimators=50, max_depth=5, n_jobs=-1, random_state=42)),
-        ('RandomForest_Depth10', RandomForestRegressor(n_estimators=50, max_depth=10, n_jobs=-1, random_state=42)),
-        ('XGBoost_Depth5', xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)),
-        ('XGBoost_Depth10', xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=10, random_state=42))
-    ]
+    # 嘗試從 main.py 儲存的檔案載入模型參數
+    models = []
+    model_dir = 'model'
+    
+    # Linear Regression
+    try:
+        lr_pipe = joblib.load(os.path.join(model_dir, 'linear_regression_model.joblib'))
+        models.append(('LinearRegression', lr_pipe.named_steps['model']))
+        print("✅ Loaded LinearRegression from main.py")
+    except Exception as e:
+        print(f"⚠️ Could not load LinearRegression from main.py ({e}), using default.")
+        models.append(('LinearRegression', LinearRegression()))
+
+    # Random Forest
+    try:
+        rf_pipe = joblib.load(os.path.join(model_dir, 'random_forest_model.joblib'))
+        models.append(('RandomForest', rf_pipe.named_steps['model']))
+        print("✅ Loaded RandomForest from main.py")
+    except Exception as e:
+        print(f"⚠️ Could not load RandomForest from main.py ({e}), using default.")
+        models.append(('RandomForest', RandomForestRegressor(n_estimators=200, max_depth=12, min_samples_leaf=2, n_jobs=-1, random_state=42)))
+
+    # XGBoost
+    try:
+        xgb_pipe = joblib.load(os.path.join(model_dir, 'xgboost_model.joblib'))
+        models.append(('XGBoost', xgb_pipe.named_steps['model']))
+        print("✅ Loaded XGBoost from main.py")
+    except Exception as e:
+        print(f"⚠️ Could not load XGBoost from main.py ({e}), using default.")
+        models.append(('XGBoost', xgb.XGBRegressor(n_estimators=200, learning_rate=0.05, max_depth=4, subsample=0.8, colsample_bytree=0.8, objective="reg:squarederror", n_jobs=-1, tree_method="hist", random_state=42)))
     
     # -----------------------------------------------------
 

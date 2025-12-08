@@ -1,19 +1,8 @@
-"""Baseline model comparison for Ubike demand prediction.
-
-This script trains three baseline regressors - Linear Regression, Random Forest,
-and XGBoost - on the cleaned Ubike demand dataset. It uses a time-based split to
-respect the temporal order of the data, evaluates each model on March data, and
-exports both a metrics table and a publication-ready comparison figure.
-"""
-
-from __future__ import annotations
-
-from pathlib import Path
-from typing import Dict, Tuple
-
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+import joblib
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -23,247 +12,156 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBRegressor
 
-
+# ==========================================
+# 1. 設定與資料載入
+# ==========================================
 RANDOM_STATE = 42
+RESULTS_DIR = 'results'
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
+print("📚 正在載入資料...")
+df = pd.read_csv('FINAL_MODEL_DATA_WITH_FEATURES.csv', parse_dates=['rent_time'])
 
-def load_dataset(csv_path: Path) -> pd.DataFrame:
-    """Load the cleaned Ubike dataset and parse datetimes."""
-    df = pd.read_csv(csv_path, parse_dates=["rent_time"])
-    if df.empty:
-        raise ValueError("The input dataset is empty. Double-check the source file.")
-    return df
+# ==========================================
+# 2. 資料前處理與切分
+# ==========================================
+print("✂️  正在切分訓練集與測試集...")
 
+# 準備特徵與目標
+target = df['rent_count']
+features = df.drop(columns=['rent_count', 'rent_time'], errors='ignore')
 
-def engineer_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-    """Prepare features and target without leaking future information."""
-    target = df["rent_count"]
+# 依時間切分 (3月為測試集)
+test_mask = df['rent_time'].dt.month == 3
+X_train = features[~test_mask]
+y_train = target[~test_mask]
+X_test = features[test_mask]
+y_test = target[test_mask]
 
-    feature_df = df.drop(columns=["rent_count"])
-    # feature_df = df[['hour', 'weekday', 'Quantity', 'mrt_dist_nearest_m', 'school_dist_nearest_m', 'park_dist_nearest_m', 'population_count']]
-    feature_df = feature_df.drop(columns=["rent_time"], errors="ignore")
-    return feature_df, target
+print(f"   訓練集: {len(X_train)} 筆, 測試集: {len(X_test)} 筆")
 
+# 建立預處理器 (數值補中位數+標準化, 類別補眾數+OneHot)
+numeric_features = X_train.select_dtypes(include=['number']).columns
+categorical_features = X_train.select_dtypes(include=['object']).columns
 
-def temporal_train_test_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Split the dataframe into training (before March) and testing (March)."""
-    if "rent_time" not in df.columns:
-        raise KeyError("Column 'rent_time' is required for the temporal split.")
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', Pipeline([
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler())
+        ]), numeric_features),
+        ('cat', Pipeline([
+            ('imputer', SimpleImputer(strategy='most_frequent')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+        ]), categorical_features)
+    ]
+)
 
-    march_mask = df["rent_time"].dt.month == 3
-    test_df = df[march_mask].copy()
-    train_df = df[~march_mask].copy()
-
-    if train_df.empty or test_df.empty:
-        raise ValueError("Temporal split failed: ensure March data exists for testing.")
-
-    return train_df, test_df
-
-
-def build_preprocessor(features: pd.DataFrame) -> ColumnTransformer:
-    """Create a preprocessing pipeline for numeric and categorical features."""
-    categorical_features = [col for col in features.columns if features[col].dtype == "object"]
-    numeric_features = [col for col in features.columns if col not in categorical_features]
-
-    numeric_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
+# ==========================================
+# 3. 模型定義
+# ==========================================
+models = {
+    "Linear Regression": LinearRegression(),
+    "Random Forest": RandomForestRegressor(
+        n_estimators=200,
+        max_depth=12,
+        min_samples_leaf=2,
+        n_jobs=-1,
+        random_state=RANDOM_STATE
+    ),
+    "XGBoost": XGBRegressor(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="reg:squarederror",
+        n_jobs=-1,
+        tree_method="hist",
+        random_state=RANDOM_STATE
     )
+}
 
-    categorical_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "onehot",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-            ),
-        ]
-    )
+# ==========================================
+# 4. 訓練與評估
+# ==========================================
+results = []
 
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", numeric_pipeline, numeric_features),
-            ("cat", categorical_pipeline, categorical_features),
-        ]
-    )
+print("\n🚀 開始訓練模型...")
+for name, model in models.items():
+    print(f"   正在訓練 {name}...")
+    
+    # 建立並訓練 Pipeline
+    pipeline = Pipeline([
+        ('preprocess', preprocessor),
+        ('model', model)
+    ])
+    pipeline.fit(X_train, y_train)
+    
+    # 儲存模型
+    model_dir = 'model'
+    os.makedirs(model_dir, exist_ok=True)
+    safe_name = name.replace(" ", "_").lower()
+    model_path = os.path.join(model_dir, f'{safe_name}_model.joblib')
+    joblib.dump(pipeline, model_path)
+    print(f"   💾 模型已儲存至: {model_path}")
 
-    return preprocessor
+    # 預測
+    y_pred = pipeline.predict(X_test)
+    
+    # 計算指標
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = mean_squared_error(y_test, y_pred) ** 0.5
+    r2 = r2_score(y_test, y_pred)
+    
+    results.append({
+        'Model': name,
+        'MAE': mae,
+        'RMSE': rmse,
+        'R2': r2
+    })
 
+# 轉為 DataFrame 並顯示
+metrics_df = pd.DataFrame(results).sort_values('MAE')
+print("\n📊 模型評估結果:")
+print(metrics_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
-def build_models(preprocessor: ColumnTransformer) -> Dict[str, Pipeline]:
-    """Instantiate the baseline model pipelines."""
-    return {
-        "Linear Regression": Pipeline(
-            steps=[
-                ("preprocess", preprocessor),
-                ("regressor", LinearRegression()),
-            ]
-        ),
-        "Random Forest": Pipeline(
-            steps=[
-                ("preprocess", preprocessor),
-                (
-                    "regressor",
-                    RandomForestRegressor(
-                        n_estimators=200,
-                        max_depth=12,
-                        min_samples_leaf=2,
-                        n_jobs=-1,
-                        random_state=RANDOM_STATE,
-                    ),
-                ),
-            ]
-        ),
-        "XGBoost": Pipeline(
-            steps=[
-                ("preprocess", preprocessor),
-                (
-                    "regressor",
-                    XGBRegressor(
-                        n_estimators=200,
-                        learning_rate=0.05,
-                        max_depth=4,
-                        subsample=0.8,
-                        colsample_bytree=0.8,
-                        random_state=RANDOM_STATE,
-                        objective="reg:squarederror",
-                        n_jobs=-1,
-                        tree_method="hist",
-                    ),
-                ),
-            ]
-        ),
-    }
+# 儲存結果
+metrics_path = os.path.join(RESULTS_DIR, 'baseline_model_metrics.csv')
+metrics_df.to_csv(metrics_path, index=False)
+print(f"\n💾 評估表已儲存至: {metrics_path}")
 
+# ==========================================
+# 5. 繪製比較圖表
+# ==========================================
+print("🎨 正在繪製比較圖表...")
+sns.set_theme(style="whitegrid")
 
-def evaluate_models(
-    models: Dict[str, Pipeline],
-    train_features: pd.DataFrame,
-    train_target: pd.Series,
-    test_features: pd.DataFrame,
-    test_target: pd.Series,
-) -> pd.DataFrame:
-    """Train models and compute baseline regression metrics."""
-    records = []
+# 準備繪圖資料
+long_df = metrics_df.melt(id_vars="Model", var_name="Metric", value_name="Score")
+error_df = long_df[long_df["Metric"].isin(["MAE", "RMSE"])]
+r2_df = long_df[long_df["Metric"] == "R2"]
 
-    for name, model in models.items():
-        model.fit(train_features, train_target)
-        predictions = model.predict(test_features)
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
-        mae = mean_absolute_error(test_target, predictions)
-        rmse = mean_squared_error(test_target, predictions) ** 0.5
-        r2 = r2_score(test_target, predictions)
+# 左圖: MAE & RMSE
+sns.barplot(data=error_df, x="Metric", y="Score", hue="Model", ax=axes[0], palette="viridis")
+axes[0].set_title("Error Metrics (Lower is Better)")
+axes[0].set_ylabel("Score")
 
-        records.append({
-            "Model": name,
-            "MAE": mae,
-            "RMSE": rmse,
-            "R2": r2,
-        })
+# 右圖: R2
+sns.barplot(data=r2_df, x="Metric", y="Score", hue="Model", ax=axes[1], palette="viridis")
+axes[1].set_title("R2 Score (Higher is Better)")
+axes[1].set_ylabel("Score")
+axes[1].set_ylim(0, 1.0)
 
-    metrics_df = pd.DataFrame(records).sort_values("MAE").reset_index(drop=True)
-    return metrics_df
+# 標註數值
+for ax in axes:
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.2f', padding=3)
 
-
-def plot_model_performance(metrics_df: pd.DataFrame, output_path: Path) -> None:
-    """Create publication-ready comparison charts with separated axes."""
-    sns.set_theme(style="whitegrid", font_scale=1.05)
-
-    long_metrics = metrics_df.melt(id_vars="Model", var_name="Metric", value_name="Score")
-    bar_palette = ["#4C72B0", "#55A868", "#C44E52"]
-
-    error_metrics = long_metrics[long_metrics["Metric"].isin(["MAE", "RMSE"])].copy()
-    r2_metrics = long_metrics[long_metrics["Metric"] == "R2"].copy()
-
-    fig, axes = plt.subplots(ncols=2, figsize=(11, 5.5))
-
-    # Plot MAE and RMSE side by side to keep scales comparable.
-    sns.barplot(
-        data=error_metrics,
-        x="Metric",
-        y="Score",
-        hue="Model",
-        palette=bar_palette,
-        ax=axes[0],
-    )
-    axes[0].set_title("Error Metrics (lower is better)", fontsize=13, weight="bold")
-    axes[0].set_ylabel("Score")
-    axes[0].set_xlabel("")
-
-    # Dedicated panel for R2 so the smaller scale does not get compressed.
-    sns.barplot(
-        data=r2_metrics,
-        x="Metric",
-        y="Score",
-        hue="Model",
-        palette=bar_palette,
-        ax=axes[1],
-    )
-    axes[1].set_title("Coefficient of Determination", fontsize=13, weight="bold")
-    axes[1].set_ylabel("R2 score")
-    axes[1].set_xlabel("")
-    ymin = min(0.0, r2_metrics["Score"].min() - 0.05)
-    ymax = max(0.6, r2_metrics["Score"].max() + 0.05)
-    axes[1].set_ylim(ymin, ymax)
-
-    for subplot in axes:
-        for container in subplot.containers:
-            subplot.bar_label(container, fmt="{:.2f}", padding=3, fontsize=9)
-        subplot.grid(axis="y", linestyle="--", linewidth=0.6)
-
-    handles, labels = axes[0].get_legend_handles_labels()
-    axes[0].legend_.remove()
-    axes[1].legend_.remove()
-    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, -0.02))
-
-    fig.suptitle("Baseline Model Comparison on March Test Set", fontsize=14, weight="bold")
-    fig.tight_layout()
-    fig.subplots_adjust(bottom=0.18)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-def export_metrics_table(metrics_df: pd.DataFrame, output_path: Path) -> None:
-    """Save metrics table as CSV for reproducibility."""
-    metrics_df.to_csv(output_path, index=False)
-
-
-def main() -> None:
-    project_dir = Path(__file__).resolve().parent
-    data_path = project_dir / "FINAL_MODEL_DATA_CLEAN.csv"
-    results_dir = project_dir / "results"
-    results_dir.mkdir(exist_ok=True)
-
-    df = load_dataset(data_path)
-    train_df, test_df = temporal_train_test_split(df)
-
-    train_features, train_target = engineer_features(train_df)
-    test_features, test_target = engineer_features(test_df)
-
-    preprocessor = build_preprocessor(train_features)
-    models = build_models(preprocessor)
-
-    metrics_df = evaluate_models(
-        models,
-        train_features,
-        train_target,
-        test_features,
-        test_target,
-    )
-
-    metrics_path = results_dir / "baseline_model_metrics.csv"
-    figure_path = results_dir / "baseline_model_comparison.png"
-
-    export_metrics_table(metrics_df, metrics_path)
-    plot_model_performance(metrics_df, figure_path)
-
-    print("Baseline evaluation complete. Metrics:")
-    print(metrics_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-    print(f"Metrics table saved to: {metrics_path}")
-    print(f"Comparison figure saved to: {figure_path}")
-
-
-if __name__ == "__main__":
-    main()
+plt.tight_layout()
+figure_path = os.path.join(RESULTS_DIR, 'baseline_model_comparison.png')
+plt.savefig(figure_path, dpi=300)
+print(f"🖼️  比較圖已儲存至: {figure_path}")
+print("\n🎉 執行完畢！")

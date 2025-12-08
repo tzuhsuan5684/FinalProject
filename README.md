@@ -1,47 +1,65 @@
 # Ubike 借閱量預測專案 (Ubike Demand Prediction)
 
-本專案旨在利用機器學習模型（XGBoost, Random Forest）預測台北市 Ubike 各站點的借閱量。結合了時間特徵、氣候數據以及站點周邊的靜態地理資訊（如捷運距離、人口密度等），以達到精準的時空預測。
+本專案使用多種機器學習模型（Linear Regression、Random Forest、XGBoost）預測台北市 Ubike 各站點的借閱量。結合時間特徵、氣候數據與站點周邊靜態地理資訊，並提供批次實驗、殘差分析與模型儲存功能，方便比較與部署。
 
 ## 📂 專案結構
 
 ```text
 .
-├── FINAL_MODEL_DATA_CLEAN.csv      # 原始訓練資料 (包含時間、氣候、地理特徵)
-├── main.py                         # 單次實驗主程式 (包含繪圖功能)
-├── run_experiments.py              # 批次實驗腳本 (自動測試多種特徵組合)
-├── generate_report_plots.py        # 報告圖表生成器 (自動產生報告所需的 5 張關鍵圖表)
-├── batch_experiment_results.csv    # 批次實驗結果紀錄 (MAE, RMSE, R2)
-├── experiment_results.csv          # 單次實驗詳細紀錄
-├── results/                        # 存放單次實驗產生的圖表
-└── report_images/                  # 存放最終報告用的精選圖表
-    ├── 1_Feature_Importance.png
-    ├── 2_Hourly_Trend.png
-    ├── 3_One_Week_Zoom.png
-    ├── 4_Scatter_Plot.png
-    └── 5_Model_Comparison.png
+├── FINAL_MODEL_DATA_WITH_FEATURES.csv   # 主要資料 (時間、氣候、地理、滯後特徵)
+├── main.py                               # 單次訓練與比較，並儲存模型到 model/
+├── run_experiments.py                    # 批次測試多種特徵組合與模型
+├── rf_residual_analysis.py               # 使用指定特徵進行 RF 殘差分析與時間平均圖
+├── batch_experiment_results.csv          # 批次實驗結果 (MAE, RMSE, R2)
+├── results/                              # 產出圖表與指標
+│   └── rf_residual_analysis/
+│       ├── residuals_by_hour.png
+│       ├── residuals_vs_predicted.png
+│       ├── residual_distribution.png
+│       └── time_average_comparison.png
+└── model/                                # 儲存訓練完成的模型 (.joblib)
+    ├── linear_regression_model.joblib
+    ├── random_forest_model.joblib
+    └── xgboost_model.joblib
 ```
 
 ## 🚀 如何執行
 
-### 1. 執行批次實驗 (Batch Experiments)
-若要測試不同特徵組合（如：只用時間 vs 加入地理特徵）的效果：
-```bash
-python run_experiments.py
-```
-結果將自動儲存至 `batch_experiment_results.csv`。
+### 1. 執行單次訓練並儲存模型 (main)
+使用完整資料的預處理（數值補中位數+標準化、類別補眾數+OneHot），訓練 Linear/RandomForest/XGBoost 並儲存模型：
 
-### 2. 產生報告圖表 (Generate Report Plots)
-若要產生報告所需的精美圖表（使用最佳模型配置）：
-```bash
-python generate_report_plots.py
-```
-圖表將輸出至 `report_images/` 資料夾。
-
-### 3. 執行單次實驗 (Single Run)
-若要手動調整參數並觀察單次結果：
-```bash
+```powershell
 python main.py
 ```
+
+產出：
+- `results/baseline_model_metrics.csv` 與 `baseline_model_comparison.png`
+- `model/linear_regression_model.joblib`
+- `model/random_forest_model.joblib`
+- `model/xgboost_model.joblib`
+
+### 2. 執行批次實驗 (run_experiments)
+測試多組特徵與模型，並可自動載入 `main.py` 儲存的模型設定：
+
+```powershell
+python run_experiments.py
+```
+
+說明：
+- 以 3 月資料為測試集，其餘月份為訓練集。
+- 每組特徵都會訓練並評估三種模型，結果寫入 `batch_experiment_results.csv`。
+- 若 `model/xxx_model.joblib` 存在，會載入並使用該模型的設定（確保一致性）。
+
+### 3. RF 殘差分析與時間平均折線圖 (rf_residual_analysis)
+使用固定特徵：`['hour','weekday','is_weekend','is_peak','rent_count_lag_3','rent_count_lag_24']` 進行 RF 預測之殘差分析，並繪製每小時的實際 vs 預測平均折線圖。
+
+```powershell
+python rf_residual_analysis.py
+```
+
+說明：
+- 若 `model/rf_model.joblib` 存在則載入；否則會重新訓練並儲存。
+- `residuals_by_hour.png` 使用紅藍漸層（`RdBu`）。
 
 ## 📊 實驗設計重點
 
@@ -52,7 +70,8 @@ python main.py
     *   *目的：模擬真實預測情境，避免 Data Leakage。*
 
 2.  **特徵工程 (Feature Engineering)**：
-    *   **動態特徵**：`hour`, `weekday`, `temperature`, `rainfall`
-    *   **靜態特徵**：`mrt_dist_nearest_m` (捷運距離), `school_dist_nearest_m` (學校距離), `population_count` (人口), `Quantity` (車柱數)
+    *   **動態特徵**：`hour`, `weekday`, `temperature`, `rainfall`, `wind_speed`, `is_weekend`, `is_peak`
+    *   **滯後特徵**：`rent_count_lag_3`, `rent_count_lag_24`
+    *   **靜態特徵**：`mrt_dist_nearest_m`, `school_dist_nearest_m`, `park_dist_nearest_m`, `population_count`, `Quantity`, `latitude`, `longitude`
 
 
