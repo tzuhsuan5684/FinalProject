@@ -1,6 +1,6 @@
-# Ubike 借閱量預測專案 (Ubike Demand Prediction)
+# Youbike 借閱量預測專案 (Youbike Demand Prediction)
 
-本專案使用多種機器學習模型（Linear Regression、Random Forest、XGBoost）預測台北市 Ubike 各站點的借閱量。結合時間特徵、氣候數據與站點周邊靜態地理資訊，並提供批次實驗、殘差分析與模型儲存功能，方便比較與部署。
+本專案使用多種機器學習模型（Linear Regression、Random Forest、XGBoost）預測台北市 Youbike 各站點的借閱量。結合時間特徵、氣候數據與站點周邊靜態地理資訊，並提供批次實驗、殘差分析與模型儲存功能，方便比較與部署。
 
 ## 📂 專案結構
 
