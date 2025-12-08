@@ -23,6 +23,24 @@
     └── xgboost_model.joblib
 ```
 
+## 🧰 如何安裝環境
+
+建議使用 Conda 或 venv。以下以 pip 為例（Windows PowerShell）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -U pip
+pip install pandas numpy seaborn matplotlib scikit-learn xgboost joblib
+```
+
+若使用 Conda：
+
+```powershell
+conda create -n ubike python=3.10 -y; conda activate ubike
+pip install pandas numpy seaborn matplotlib scikit-learn xgboost joblib
+```
+
 ## 🚀 如何執行
 
 ### 1. 執行單次訓練並儲存模型 (main)
@@ -60,6 +78,30 @@ python rf_residual_analysis.py
 說明：
 - 若 `model/rf_model.joblib` 存在則載入；否則會重新訓練並儲存。
 - `residuals_by_hour.png` 使用紅藍漸層（`RdBu`）。
+
+## 🔁 如何重現結果
+
+1. 安裝環境並啟用虛擬環境（見上方「如何安裝環境」）。
+2. 確保 `FINAL_MODEL_DATA_WITH_FEATURES.csv` 位於專案根目錄，且包含必要欄位（如 `hour`, `weekday`, `is_weekend`, `is_peak`, `rent_count_lag_3`, `rent_count_lag_24` 等）。
+3. 執行單次訓練以產生與儲存模型與基準指標：
+    ```powershell
+    python main.py
+    ```
+4. 執行批次實驗，生成各特徵組合下的模型表現：
+    ```powershell
+    python run_experiments.py
+    ```
+    產出 `batch_experiment_results.csv`，可用於報告與比較。
+5. 進行 RF 殘差分析與時間平均折線圖，驗證模型在時間維度的行為：
+    ```powershell
+    python rf_residual_analysis.py
+    ```
+    圖表位於 `results/rf_residual_analysis/`。
+
+常見注意事項：
+- 若儲存 CSV 時出現 `Permission denied`，請關閉該檔案（例如 Excel）。
+- 若缺少套件，請重新執行安裝指令。
+- 批次實驗會以 3 月為測試集，其餘為訓練集；確保資料時間欄位 `rent_time` 可正確解析。
 
 ## 📊 實驗設計重點
 
